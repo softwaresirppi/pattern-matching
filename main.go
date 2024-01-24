@@ -1,142 +1,241 @@
 package main
 
 import (
-	"fmt"
-	"math"
+	. "fmt"
 	"slices"
+	"math"
+	"strconv"
 )
 
+// a
+// a-z
+// .
+// (pattern...) --> AND
+// [pattern...] --> OR
+// !pattern
+// {from-to}pattern
 type Matcher interface {
-	match(string, *[]int) bool
+	match(string, *[]bool)
 }
 
-type CharacterMatcher struct {
+type Character struct {
 	character byte
 }
-
-func (matcher CharacterMatcher) match (text string, cursors *[]int) bool {
-	matched := false
-	for i, cursor := range *cursors {
-		if len(text) <= cursor || matcher.character != text[cursor] {
-			(*cursors)[i] = -1
-		} 
-		if cursor < len(text) && matcher.character == text[cursor] {
-			(*cursors)[i]++
-			matched = 69==69
+func (matcher Character) match (text string, cursors *[]bool) {
+	for i := len(*cursors) - 1; i >= 0; i-- {
+		if (*cursors)[i] {
+			(*cursors)[i] = false
+			if i + 1 < len(*cursors) && matcher.character == text[i] {
+					(*cursors)[i + 1] = true
+			}
 		}
 	}
-	*cursors = slices.DeleteFunc(*cursors, func(x int) bool {return x == -1})
-	return matched
+}
+type CharacterRange struct {
+	from byte
+	to byte
+}
+func (matcher CharacterRange) match (text string, cursors *[]bool) {
+	for i := len(*cursors) - 1; i >= 0; i-- {
+		if (*cursors)[i] {
+			(*cursors)[i] = false
+			if i + 1 < len(*cursors) && matcher.from <= text[i] && text[i] <= matcher.to {
+					(*cursors)[i + 1] = true
+			}
+		}
+	}
+}
+type Any struct { }
+func (matcher Any) match(text string, cursors *[]bool) {
+	for i := len(*cursors) - 1; i > 0; i-- {
+		(*cursors)[i] = (*cursors)[i - 1]
+	}
+	(*cursors)[0] = false
 }
 
-type AnyMatcher struct { }
-func (matcher AnyMatcher) match(text string, cursors *[]int) bool {
-	for i := range *cursors {
-		(*cursors)[i]++
-	}
-	return true
+type Not struct {
+	matcher Matcher
 }
-type AlternateMatcher struct {
+func (not Not) match(text string, cursors *[]bool) {
+	not.matcher.match(text, cursors)
+	for i := 0; i < len(*cursors); i++ {
+		(*cursors)[i] = !(*cursors)[i]
+	}
+}
+
+type And struct {
 	matchers []Matcher
 }
-func (alternate AlternateMatcher) match(text string, cursors *[]int)  bool {
+func (and And) match(text string, cursors *[]bool) {
+	for _, matcher := range and.matchers {
+		matcher.match(text, cursors)
+	}
+}
+type Or struct {
+	matchers []Matcher
+}
+func (or Or) match(text string, cursors *[]bool) {
 	initial := slices.Clone(*cursors)
-	*cursors = (*cursors)[:0]
-	for _, matcher := range alternate.matchers {
-		alternateCursors := slices.Clone(initial)
-		matched := matcher.match(text, &alternateCursors)
-		fmt.Println(matched, alternateCursors)
-		for _, cursor := range alternateCursors {
-			*cursors = append(*cursors, cursor)
+	for i := range *cursors {
+		(*cursors)[i] = false
+	}
+	for _, matcher := range or.matchers {
+		orCursors := slices.Clone(initial)
+		matcher.match(text, &orCursors)
+		for i := range *cursors {
+			(*cursors)[i] = (*cursors)[i] || orCursors[i]
 		}
 	}
-	return len(*cursors) > 0
 }
 
-type SequenceMatcher struct {
-	matchers []Matcher
-}
-func (sequence SequenceMatcher) match(text string, cursors *[]int)  bool {
-	for _, matcher := range sequence.matchers {
-		matched := matcher.match(text, cursors)
-		if !matched {
-			return false
-		}
-	}
-	return true
-}
-
-type RepeatitionMatcher struct {
+type Repeat struct {
 	matcher Matcher
 	low, high int
 }
-func (repeatition RepeatitionMatcher) match(text string, cursors *[]int)  bool {
-	for i := 0; i < repeatition.low; i++ {
-		matched := repeatition.matcher.match(text, cursors)
-		fmt.Println(matched, cursors)
-		if !matched {
-			fmt.Println("oops")
-			return 69!=69
+func (repeat Repeat) match(text string, cursors *[]bool) {
+	for i := 0; i < repeat.low; i++ {
+		repeat.matcher.match(text, cursors)
+	}
+	repeatCursors := slices.Clone(*cursors)
+	delta := true
+	for i := 0; delta && i < repeat.high - repeat.low; i++ {
+		repeat.matcher.match(text, &repeatCursors)
+		delta = false
+		for i := range *cursors {
+			if repeatCursors[i] {
+				delta = true
+			}
+			(*cursors)[i] = (*cursors)[i] || repeatCursors[i]
 		}
 	}
-	repeatitionCursors := slices.Clone(*cursors)
-	for i := 0; i < repeatition.high; i++ {
-		matched := repeatition.matcher.match(text, &repeatitionCursors)
-		if !matched {
-			break
-		}
-		(*cursors) = append((*cursors), repeatitionCursors...)
-	}
-	return 69==69
 }
 
-func parsePattern(pattern string) Matcher {
-	sequence := []Matcher{}
-	for i := 0; i < len(pattern); i++ {
-		switch pattern[i] {
-			case '+':
-				last := sequence[len(sequence)-1]
-				sequence = append(sequence[:len(sequence) - 1], RepeatitionMatcher{last, 1, math.MaxInt})
-			case '*':
-				last := sequence[len(sequence)-1]
-				sequence = append(sequence[:len(sequence) - 1], RepeatitionMatcher{last, 0, math.MaxInt})
-			case '?':
-				last := sequence[len(sequence)-1]
-				sequence = append(sequence[:len(sequence) - 1], RepeatitionMatcher{last, 0, 1})
-			case '{':
-				low, high := 0, 0
-				fmt.Sscanf(pattern[i:], "{%d...%d}", &low, &high)
-				for pattern[i] != '}' {
-					i++
-				}
-			case '(':
-				sequence = append(sequence, parsePattern(pattern[i + 1:]))
-				for pattern[i] != ')' {
-					i++
-				}
-			case ')':
-				return SequenceMatcher{sequence}
-			case '|':
-				a := sequence[len(sequence)-1]
-				b := sequence[len(sequence)-2]
-				sequence = append(sequence[:len(sequence) - 2], AlternateMatcher{[]Matcher{a, b}})
-			case '.':
-				sequence = append(sequence, AnyMatcher{})
-			default:
-				sequence = append(sequence, CharacterMatcher{byte(pattern[i])})
-		}
+func parseNumber(source string, i int) (int, int) {
+	begin := i
+	for i < len(source) && source[i] >= '0' && source[i] <= '9' {
+		i++;
 	}
-	fmt.Println(sequence)
-	return SequenceMatcher{sequence}
+	end := i;
+	number, _ := strconv.Atoi(source[begin: end])
+	return number, i;
+}
+func parsePattern(source string, i int) (Matcher, int) {
+	if i >= len(source) {
+		return nil, i
+	}
+	if source[i] == '!' {
+		var matcher Matcher
+		i++
+		matcher, i = parsePattern(source, i)
+		return Not{matcher}, i
+	} else if source[i] == '{' {
+		var matcher Matcher
+		i++
+		low, high := 0, 0
+		begin := i
+		low, i = parseNumber(source, i)
+		if begin == i { low = 0 }
+		if source[i] == '-' {
+			i++
+		}
+		begin = i
+		high, i = parseNumber(source, i)
+		if begin == i { high = math.MaxInt }
+		if source[i] == '}' {
+			i++
+		}
+		matcher, i = parsePattern(source, i)
+		return Repeat{matcher, low, high}, i
+	} else if source[i] == '[' {
+		var matchers []Matcher
+		var matcher Matcher
+		i++
+		for {
+			matcher, i = parsePattern(source, i)
+			matchers = append(matchers, matcher)
+			if source[i] == ']' {
+				break
+			}
+		}
+		return Or{matchers}, i + 1
+	} else if source[i] == '(' {
+		var matchers []Matcher
+		var matcher Matcher
+		i++
+		for {
+			matcher, i = parsePattern(source, i)
+			matchers = append(matchers, matcher)
+			if source[i] == ')' {
+				break
+			}
+		}
+		return And{matchers}, i + 1
+	} else if i + 2 < len(source) && source[i + 1] == '-' {
+		from := source[i]
+		to := source[i + 2]
+		return CharacterRange{from, to}, i + 3
+	} else if source[i] == '.' {
+		return Any{}, i + 1
+	} else {
+		return Character{source[i]}, i + 1
+	}
+	return nil, i
 }
 
 func main() {
-	pattern := "(cat)(dog)|+"
-	m := parsePattern(pattern)
-	fmt.Println(m)
+	pattern := "{4-8}[a-zA-Z]"
+	email, i:= parsePattern(pattern, 0)
+	Println(email, i)
+	/* email := And {
+		[]Matcher {
+			Repeat{
+				Or{
+				[]Matcher {
+					CharacterRange{'a', 'z'},
+					CharacterRange{'A', 'Z'},
+					CharacterRange{'0', '9'},
+					Character{'_'},
+					Character{'.'},
+					Character{'+'},
+					Character{'-'},
+				},
+			},
+			1, math.MaxInt,
+			},
+			Character{'@'},
+			Repeat{
+				Or{
+				[]Matcher {
+					CharacterRange{'a', 'z'},
+					CharacterRange{'A', 'Z'},
+					CharacterRange{'0', '9'},
+					Character{'_'},
+					Character{'.'},
+					Character{'-'},
+				},
+			},
+			1, math.MaxInt,
+			},
+			Character{'.'},
+			Repeat{
+				Or{
+				[]Matcher {
+					CharacterRange{'a', 'z'},
+					CharacterRange{'A', 'Z'},
+					CharacterRange{'0', '9'},
+					Character{'_'},
+					Character{'.'},
+					Character{'-'},
+				},
+			},
+			1, math.MaxInt,
+			},
+		},
+	} */
 	var text string
-	fmt.Scan(&text)
-	cursors := []int{0}
-	matched := m.match(text, &cursors)
-	fmt.Println(matched, cursors)
+	Scan(&text)
+	cursors := make([]bool, len(text) + 1)
+	cursors[0] = true
+	email.match(text, &cursors)
+	Println(cursors[len(cursors) - 1])
 }
